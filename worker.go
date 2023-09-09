@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/go-resty/resty/v2"
 	"go.uber.org/zap"
+	"net/url"
 	"os/exec"
 	"strings"
 	"sync"
@@ -54,10 +55,11 @@ func generateSign(cookie string, postUrl string) Sign {
 			
 			const url = '%s';
 			const dataObj = {
-				"cType": "mti",
-				"fpPlatform": 3,
+				"cType": "wx_wallet",
+				"fpPlatform": 13,
 				"wxOpenId": "",
-				"appVersion": ""
+				"appVersion": "",
+				"mtFingerprint": ""
 			};
 			const h5 = eval(data);
 			const h5guard = new h5('%s', '%s');
@@ -102,13 +104,19 @@ func checkLogin(user User, coupon Coupon, resultChan chan map[string]string) boo
 	var infoUrl string
 	if strings.Contains(coupon.Desc, "v2") {
 		infoUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/couponcomponent/info/v2?couponReferIds=%s&actualLng=%s&actualLat=%s&geoType=2&isInDpEnv=0&sceneId=1&cType=wx_wallet&yodaReady=h5&csecplatform=4&csecversion=2.1.2",
-			coupon.ID, config.ActualLng, config.ActualLat)
+			url.QueryEscape(coupon.ID),
+			url.QueryEscape(config.ActualLng),
+			url.QueryEscape(config.ActualLat))
 	} else if strings.Contains(coupon.Desc, "v1") {
 		infoUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/couponcomponent/info?couponReferIds=%s&actualLng=%s&actualLat=%s&geoType=2&isInDpEnv=0&sceneId=1&cType=wx_wallet&yodaReady=h5&csecplatform=4&csecversion=2.1.2",
-			coupon.ID, config.ActualLng, config.ActualLat)
+			url.QueryEscape(coupon.ID),
+			url.QueryEscape(config.ActualLng),
+			url.QueryEscape(config.ActualLat))
 	} else {
-		infoUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/limitcouponcomponent/info?couponReferIds=%s",
-			coupon.ID)
+		infoUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/limitcouponcomponent/info?couponReferIds=%s&actualLng=%s&actualLat=%s&geoType=2",
+			url.QueryEscape(coupon.ID),
+			url.QueryEscape(config.ActualLng),
+			url.QueryEscape(config.ActualLat))
 		//infoUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/limitcouponcomponent/info?couponReferIds=%s&actualLng=%s&actualLat=%s&geoType=2&gdPageId=%s&pageId=%s&componentId=%s&yodaReady=h5&csecplatform=4&csecversion=2.1.2&mtgsig=%s",
 		//	coupon.ID, config.ActualLng, config.ActualLat, coupon.GdID, coupon.PageID, coupon.InstID, url.QueryEscape("{\"a1\":\"1.1\",\"a2\":1694070847161,\"a3\":\"8472xz73ww8652z1z7746zz0400yuz0y81z3v2w1w26979583w4498y1\",\"a5\":\"GWXOl81ochTUSfEq8Ju0bpN5fk3zdxRc\",\"a6\":\"hs1.4rMLnSSN7/TuDgTJbLhpKNDVnAdjPbCEuFr+W/5Q5JxbHifHeGI0uKyo40lOCzh8qiuMHlhW/EcSsVThBjZrkduyFwUbQ8bT0bSAmvWbYmsI=\",\"x0\":4,\"d1\":\"7dda9f6324f942a9f2a241755923ddc3\"}"))
 	}
@@ -165,19 +173,39 @@ func checkLogin(user User, coupon Coupon, resultChan chan map[string]string) boo
 func grabCoupon(user User, userKey int, coupon Coupon, userCoupon **UserCoupon, resultChan chan map[string]string) {
 	var postUrl string
 	if strings.Contains(coupon.Desc, "v2") {
-		postUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/couponcomponent/fetchcomponentcoupon/v2?couponReferId=%s&geoType=2&isInDpEnv=0&gdPageId=%s&pageId=%s&sceneId=1",
-			coupon.ID, coupon.GdID, coupon.PageID)
+		postUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/couponcomponent/fetchcomponentcoupon/v2?couponReferId=%s&actualLng=%s&actualLat=%s&geoType=2&isInDpEnv=0&gdPageId=%s&pageId=%s&version=1&instanceId=%s&utmSource=appshare&utmCampaign=AgroupBgroupC0D200E0Ghomepage_category1_394__a1__c-1024&needFetchedByUUID=1&sceneId=1&yodaReady=h5&csecplatform=4&csecversion=2.1.2",
+			url.QueryEscape(coupon.ID),
+			url.QueryEscape(config.ActualLng),
+			url.QueryEscape(config.ActualLat),
+			url.QueryEscape(coupon.GdID),
+			url.QueryEscape(coupon.PageID),
+			url.QueryEscape(coupon.InstID))
 	} else if strings.Contains(coupon.Desc, "v1") {
 		postUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/couponcomponent/fetchcomponentcoupon?couponReferId=%s&actualLng=%s&actualLat=%s&geoType=2&isInDpEnv=0&gdPageId=%s&pageId=%s",
-			coupon.ID, config.ActualLng, config.ActualLat, coupon.GdID, coupon.PageID)
+			url.QueryEscape(coupon.ID),
+			url.QueryEscape(config.ActualLng),
+			url.QueryEscape(config.ActualLat),
+			url.QueryEscape(coupon.GdID),
+			url.QueryEscape(coupon.PageID))
 	} else if coupon.InstID == "" {
 		//半参
 		postUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/limitcouponcomponent/fetchcoupon?couponReferId=%s&actualLng=%s&actualLat=%s&geoType=2&gdPageId=%s&pageId=%s",
-			coupon.ID, config.ActualLng, config.ActualLat, coupon.GdID, coupon.PageID)
+			url.QueryEscape(coupon.ID),
+			url.QueryEscape(config.ActualLng),
+			url.QueryEscape(config.ActualLat),
+			url.QueryEscape(coupon.GdID),
+			url.QueryEscape(coupon.PageID))
 	} else {
 		//全参
+		fmt.Println("全参")
 		postUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/limitcouponcomponent/fetchcoupon?couponReferId=%s&actualLng=%s&actualLat=%s&geoType=2&gdPageId=%s&pageId=%s&version=1&utmSource=&utmCampaign=&instanceId=%s&componentId=%s&yodaReady=h5&csecplatform=4&csecversion=2.1.2",
-			coupon.ID, config.ActualLng, config.ActualLat, coupon.GdID, coupon.PageID, coupon.InstID, coupon.InstID)
+			url.QueryEscape(coupon.ID),
+			url.QueryEscape(config.ActualLng),
+			url.QueryEscape(config.ActualLat),
+			url.QueryEscape(coupon.GdID),
+			url.QueryEscape(coupon.PageID),
+			url.QueryEscape(coupon.InstID),
+			url.QueryEscape(coupon.InstID))
 	}
 	fmt.Println(postUrl)
 	// 计算抢卷时间与当前时间的差值
@@ -228,8 +256,8 @@ func grabCoupon(user User, userKey int, coupon Coupon, userCoupon **UserCoupon, 
 func makeRequest(user User, coupon Coupon, sign Sign, postUrl string, tries int, userCoupon ***UserCoupon, resultChan chan map[string]string) {
 	client := resty.New()
 	data := Data{
-		CType:         "mti",
-		FpPlatform:    3,
+		CType:         "wx_wallet",
+		FpPlatform:    13,
 		WxOpenId:      "",
 		AppVersion:    "",
 		MtFingerprint: sign.MtFingerprint,
@@ -240,13 +268,13 @@ func makeRequest(user User, coupon Coupon, sign Sign, postUrl string, tries int,
 		SetBody(bytes.NewBuffer(postData)).
 		SetHeader("Host", "promotion.waimai.meituan.com").
 		SetHeader("Connection", "keep-alive").
-		//SetContentLength(true).
+		SetContentLength(true).
 		SetHeader("Accept", "application/json, text/plain, */*").
 		SetHeader("mtgsig", sign.MtgSig).
 		SetHeader("User-Agent", config.UserAgent).
 		SetHeader("Content-Type", "application/json").
 		SetHeader("Origin", "https://market.waimai.meituan.com").
-		//SetHeader("X-Requested-With", "com.tencent.mm").
+		SetHeader("X-Requested-With", "com.tencent.mm").
 		SetHeader("Sec-Fetch-Site", "same-site").
 		SetHeader("Sec-Fetch-Mode", "cors").
 		SetHeader("Sec-Fetch-Dest", "empty").
@@ -260,7 +288,7 @@ func makeRequest(user User, coupon Coupon, sign Sign, postUrl string, tries int,
 		return
 	}
 	var response Response
-	fmt.Println(string(resp.Body()))
+
 	err = json.Unmarshal(resp.Body(), &response)
 	if err != nil {
 		logger.Error("响应体Json解析失败", zap.String("user", user.Name), zap.String("coupon", coupon.Desc))
