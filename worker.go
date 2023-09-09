@@ -37,16 +37,17 @@ var resultMap map[string]string
 func processCouponUserPair(coupon Coupon, userKey int, user User, userCoupon *UserCoupon, wg *sync.WaitGroup, resultChan chan map[string]string) {
 	resultMap = make(map[string]string)
 	defer wg.Done()
-	logger.Info("抢卷任务运行", zap.String("user", user.Name), zap.String("coupon", coupon.Desc), zap.Int("userKey", userKey))
+	ua := randomUA(userKey)
+	logger.Info("抢卷任务运行", zap.String("user", user.Name), zap.String("coupon", coupon.Desc), zap.Int("userKey", userKey), zap.String("ua", ua))
 
-	login := checkLogin(user, coupon, resultChan)
+	login := checkLogin(user, coupon, ua, resultChan)
 	if !login {
 		return
 	}
-	grabCoupon(user, userKey, coupon, &userCoupon, resultChan)
+	grabCoupon(user, userKey, coupon, ua, &userCoupon, resultChan)
+
 }
-func generateSign(cookie string, postUrl string) Sign {
-	fmt.Println(config.UserAgent)
+func generateSign(cookie string, postUrl string, ua string) Sign {
 
 	//获取签名Json代码
 	signJsCode := fmt.Sprintf(`
@@ -66,7 +67,7 @@ func generateSign(cookie string, postUrl string) Sign {
 			console.log(JSON.stringify(await h5guard.sign(url, dataObj)));
 			process.exit(0);
 		});
-	`, postUrl, cookie, config.UserAgent)
+	`, postUrl, cookie, ua)
 
 	// 调用 nodejs 获取签名
 	cmd := exec.Command("node", "-e", signJsCode)
@@ -92,15 +93,9 @@ func generateSign(cookie string, postUrl string) Sign {
 			return Sign{}
 		}
 	}
-	fmt.Println(signData.MtgSig)
 	return signData
 }
-func checkLogin(user User, coupon Coupon, resultChan chan map[string]string) bool {
-	//postTemplate := `https://promotion.waimai.meituan.com/lottery/limitcouponcomponent/fetchcoupon?couponReferId=%s&actualLng=115.064963&actualLat=35.777563&geoType=2&gdPageId=%s&pageId=%s`
-	//postUrl := fmt.Sprintf(postTemplate, coupon.ID, coupon.GdID, coupon.PageID)
-	//ua := "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
-	//sign := generateSign(user.Cookie, postUrl, ua)
-
+func checkLogin(user User, coupon Coupon, ua string, resultChan chan map[string]string) bool {
 	var infoUrl string
 	if strings.Contains(coupon.Desc, "v2") {
 		infoUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/couponcomponent/info/v2?couponReferIds=%s&actualLng=%s&actualLat=%s&geoType=2&isInDpEnv=0&sceneId=1&cType=wx_wallet&yodaReady=h5&csecplatform=4&csecversion=2.1.2",
@@ -121,11 +116,10 @@ func checkLogin(user User, coupon Coupon, resultChan chan map[string]string) boo
 		//	coupon.ID, config.ActualLng, config.ActualLat, coupon.GdID, coupon.PageID, coupon.InstID, url.QueryEscape("{\"a1\":\"1.1\",\"a2\":1694070847161,\"a3\":\"8472xz73ww8652z1z7746zz0400yuz0y81z3v2w1w26979583w4498y1\",\"a5\":\"GWXOl81ochTUSfEq8Ju0bpN5fk3zdxRc\",\"a6\":\"hs1.4rMLnSSN7/TuDgTJbLhpKNDVnAdjPbCEuFr+W/5Q5JxbHifHeGI0uKyo40lOCzh8qiuMHlhW/EcSsVThBjZrkduyFwUbQ8bT0bSAmvWbYmsI=\",\"x0\":4,\"d1\":\"7dda9f6324f942a9f2a241755923ddc3\"}"))
 	}
 	client := resty.New()
-	//fmt.Println(infoUrl)
 	resp, err := client.R().
 		SetHeader("Connection", "keep-alive").
 		SetHeader("Accept", "application/json, text/plain, */*").
-		SetHeader("User-Agent", config.UserAgent).
+		SetHeader("User-Agent", ua).
 		SetHeader("Origin", "https://market.waimai.meituan.com").
 		SetHeader("Sec-Fetch-Site", "same-site").
 		SetHeader("Sec-Fetch-Mode", "cors").
@@ -140,9 +134,6 @@ func checkLogin(user User, coupon Coupon, resultChan chan map[string]string) boo
 		logger.Error("登陆状态检查失败！", zap.String("user", user.Name), zap.String("coupon", coupon.Desc))
 		return false
 	}
-
-	fmt.Println(string(resp.Body()))
-
 	var response Response
 	err = json.Unmarshal(resp.Body(), &response)
 	if err != nil {
@@ -170,9 +161,11 @@ func checkLogin(user User, coupon Coupon, resultChan chan map[string]string) boo
 	}
 
 }
-func grabCoupon(user User, userKey int, coupon Coupon, userCoupon **UserCoupon, resultChan chan map[string]string) {
+func grabCoupon(user User, userKey int, coupon Coupon, ua string, userCoupon **UserCoupon, resultChan chan map[string]string) {
 	var postUrl string
+	var version string
 	if strings.Contains(coupon.Desc, "v2") {
+		version = "v2"
 		postUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/couponcomponent/fetchcomponentcoupon/v2?couponReferId=%s&actualLng=%s&actualLat=%s&geoType=2&isInDpEnv=0&gdPageId=%s&pageId=%s&version=1&instanceId=%s&utmSource=appshare&utmCampaign=AgroupBgroupC0D200E0Ghomepage_category1_394__a1__c-1024&needFetchedByUUID=1&sceneId=1&yodaReady=h5&csecplatform=4&csecversion=2.1.2",
 			url.QueryEscape(coupon.ID),
 			url.QueryEscape(config.ActualLng),
@@ -181,6 +174,7 @@ func grabCoupon(user User, userKey int, coupon Coupon, userCoupon **UserCoupon, 
 			url.QueryEscape(coupon.PageID),
 			url.QueryEscape(coupon.InstID))
 	} else if strings.Contains(coupon.Desc, "v1") {
+		version = "v1"
 		postUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/couponcomponent/fetchcomponentcoupon?couponReferId=%s&actualLng=%s&actualLat=%s&geoType=2&isInDpEnv=0&gdPageId=%s&pageId=%s",
 			url.QueryEscape(coupon.ID),
 			url.QueryEscape(config.ActualLng),
@@ -188,7 +182,7 @@ func grabCoupon(user User, userKey int, coupon Coupon, userCoupon **UserCoupon, 
 			url.QueryEscape(coupon.GdID),
 			url.QueryEscape(coupon.PageID))
 	} else if coupon.InstID == "" {
-		//半参
+		version = "brief"
 		postUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/limitcouponcomponent/fetchcoupon?couponReferId=%s&actualLng=%s&actualLat=%s&geoType=2&gdPageId=%s&pageId=%s",
 			url.QueryEscape(coupon.ID),
 			url.QueryEscape(config.ActualLng),
@@ -196,8 +190,7 @@ func grabCoupon(user User, userKey int, coupon Coupon, userCoupon **UserCoupon, 
 			url.QueryEscape(coupon.GdID),
 			url.QueryEscape(coupon.PageID))
 	} else {
-		//全参
-		fmt.Println("全参")
+		version = "intact"
 		postUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/limitcouponcomponent/fetchcoupon?couponReferId=%s&actualLng=%s&actualLat=%s&geoType=2&gdPageId=%s&pageId=%s&version=1&utmSource=&utmCampaign=&instanceId=%s&componentId=%s&yodaReady=h5&csecplatform=4&csecversion=2.1.2",
 			url.QueryEscape(coupon.ID),
 			url.QueryEscape(config.ActualLng),
@@ -218,7 +211,7 @@ func grabCoupon(user User, userKey int, coupon Coupon, userCoupon **UserCoupon, 
 	couponTimer := time.NewTimer(timeUntilCoupon - time.Duration(config.AheadFetchMilli)*time.Millisecond)
 	defer couponTimer.Stop()
 
-	logger.Info("定时任务启动!", zap.String("user", user.Name), zap.String("coupon", coupon.Desc))
+	logger.Info("定时任务启动!", zap.String("user", user.Name), zap.String("coupon", coupon.Desc), zap.String("version", version))
 
 	var signs []Sign
 	//非成功情况尝试次数
@@ -230,7 +223,7 @@ func grabCoupon(user User, userKey int, coupon Coupon, userCoupon **UserCoupon, 
 	case <-signTimer.C:
 		signStartTime := time.Now()
 		for i := 0; i < maxTries; i++ {
-			sign := generateSign(user.Cookie, postUrl)
+			sign := generateSign(user.Cookie, postUrl, ua)
 			signs = append(signs, sign)
 		}
 		signEndTime := time.Now()
@@ -240,20 +233,20 @@ func grabCoupon(user User, userKey int, coupon Coupon, userCoupon **UserCoupon, 
 	}
 	select {
 	case <-couponTimer.C:
+		time.Sleep(time.Duration(userKey*config.ProcessIntervalMilli) * time.Millisecond)
 		for _, sign := range signs {
 			if (*userCoupon).IsStop {
 				return
 			}
-			time.Sleep(time.Duration(userKey*config.ProcessIntervalMilli) * time.Millisecond)
-			makeRequest(user, coupon, sign, postUrl, tries, &userCoupon, resultChan)
-
+			makeRequest(user, coupon, sign, postUrl, tries, ua, &userCoupon, resultChan)
 			tries++
-			time.Sleep(time.Duration(config.RequestIntervalMilli) * time.Millisecond)
+			//并发时使用
+			//time.Sleep(time.Duration(config.RequestIntervalMilli) * time.Millisecond)
 		}
 	}
 }
 
-func makeRequest(user User, coupon Coupon, sign Sign, postUrl string, tries int, userCoupon ***UserCoupon, resultChan chan map[string]string) {
+func makeRequest(user User, coupon Coupon, sign Sign, postUrl string, tries int, ua string, userCoupon ***UserCoupon, resultChan chan map[string]string) {
 	client := resty.New()
 	data := Data{
 		CType:         "wx_wallet",
@@ -271,7 +264,7 @@ func makeRequest(user User, coupon Coupon, sign Sign, postUrl string, tries int,
 		SetContentLength(true).
 		SetHeader("Accept", "application/json, text/plain, */*").
 		SetHeader("mtgsig", sign.MtgSig).
-		SetHeader("User-Agent", config.UserAgent).
+		SetHeader("User-Agent", ua).
 		SetHeader("Content-Type", "application/json").
 		SetHeader("Origin", "https://market.waimai.meituan.com").
 		SetHeader("X-Requested-With", "com.tencent.mm").
