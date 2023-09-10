@@ -27,6 +27,7 @@ type Coupon struct {
 type User struct {
 	Name   string `json:"name"`
 	Cookie string `json:"cookie"`
+	UA     string `json:"ua"`
 	Active bool   `json:"active"`
 }
 type UserCoupon struct {
