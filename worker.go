@@ -37,8 +37,9 @@ var resultMap map[string]string
 func processCouponUserPair(coupon Coupon, userKey int, user User, userCoupon *UserCoupon, wg *sync.WaitGroup, resultChan chan map[string]string) {
 	resultMap = make(map[string]string)
 	defer wg.Done()
-	logger.Info("抢卷任务运行", zap.String("user", user.Name), zap.String("coupon", coupon.Desc), zap.Int("userKey", userKey), zap.String("ua", user.UA))
-
+	logger.Info("抢卷任务运行", zap.String("user", user.Name), zap.String("coupon", coupon.Desc), zap.Int("userKey", userKey))
+	//总数统计
+	task.Total++
 	login := checkLogin(user, coupon, resultChan)
 	if !login {
 		return
@@ -131,12 +132,14 @@ func checkLogin(user User, coupon Coupon, resultChan chan map[string]string) boo
 
 	if err != nil {
 		logger.Error("登陆状态检查失败！", zap.String("user", user.Name), zap.String("coupon", coupon.Desc))
+		task.Fail++
 		return false
 	}
 	var response Response
 	err = json.Unmarshal(resp.Body(), &response)
 	if err != nil {
 		logger.Error("Check响应体Json解析失败", zap.String("user", user.Name), zap.String("coupon", coupon.Desc))
+		task.Fail++
 		return false
 	}
 
@@ -145,7 +148,8 @@ func checkLogin(user User, coupon Coupon, resultChan chan map[string]string) boo
 		if response.Data.CouponInfo[coupon.ID] == nil && !strings.Contains(coupon.Desc, "v") {
 			logger.Error("用户没有资格领取或该优惠券已下架！", zap.String("user", user.Name), zap.String("coupon", coupon.Desc))
 			logger.Warn("详细请求", zap.String("请求", string(resp.Body())))
-			resultMap[coupon.Desc] = fmt.Sprintf("%s：%s", user.Name, "用户没有资格领取或该优惠券已下架！")
+			task.Fail++
+			resultMap[coupon.Desc] = fmt.Sprintf("❌%s：%s", user.Name, "用户没有资格领取或该优惠券已下架！")
 			resultChan <- resultMap
 			return false
 		}
@@ -153,7 +157,8 @@ func checkLogin(user User, coupon Coupon, resultChan chan map[string]string) boo
 		return true
 	} else {
 		logger.Error(response.Msg, zap.String("user", user.Name), zap.String("coupon", coupon.Desc))
-		resultMap[coupon.Desc] = fmt.Sprintf("%s：%s", user.Name, response.Msg)
+		task.Fail++
+		resultMap[coupon.Desc] = fmt.Sprintf("❌%s：%s", user.Name, response.Msg)
 		resultChan <- resultMap
 		return false
 	}
@@ -221,11 +226,20 @@ func grabCoupon(user User, userKey int, coupon Coupon, userCoupon **UserCoupon, 
 		signStartTime := time.Now()
 		for i := 0; i < maxTries; i++ {
 			sign := generateSign(user, postUrl)
+			if sign.MtgSig == "" || sign.MtFingerprint == "" {
+				return
+			}
 			signs = append(signs, sign)
 		}
 		signEndTime := time.Now()
 		signTime := signEndTime.Sub(signStartTime)
-		logger.Info("签名生成成功", zap.String("user", user.Name), zap.String("coupon", coupon.Desc), zap.String("耗时", signTime.String()), zap.Int("数量", maxTries))
+		if len(signs) != 0 {
+			logger.Info("签名生成成功", zap.String("user", user.Name), zap.String("coupon", coupon.Desc), zap.String("耗时", signTime.String()), zap.Int("数量", maxTries))
+
+		} else {
+			logger.Error("签名生成失败", zap.String("user", user.Name), zap.String("coupon", coupon.Desc), zap.String("耗时", signTime.String()), zap.Int("数量", maxTries))
+			task.Fail++
+		}
 
 	}
 	select {
@@ -275,6 +289,7 @@ func makeRequest(user User, coupon Coupon, sign Sign, postUrl string, tries int,
 		Post(postUrl)
 	if err != nil {
 		logger.Error("请求失败！", zap.String("user", user.Name), zap.String("coupon", coupon.Desc), zap.Int("请求次数", tries))
+		task.Fail++
 		return
 	}
 	var response Response
@@ -289,24 +304,28 @@ func makeRequest(user User, coupon Coupon, sign Sign, postUrl string, tries int,
 	if response.Msg != "" {
 		if strings.Contains(response.Msg, "成功") || strings.Contains(response.Msg, "已领取") || strings.Contains(response.Msg, "已获得") {
 			logger.Info(response.Msg, zap.String("user", user.Name), zap.String("coupon", coupon.Desc), zap.Int("请求次数", tries), zap.Duration("耗时", resp.Time()))
-			resultMap[coupon.Desc] = fmt.Sprintf("%s：%s %s", user.Name, response.Msg, time.Now().Format("2006-01-02 15:04:05.0000"))
+			task.Success++
+			resultMap[coupon.Desc] = fmt.Sprintf("✅%s：%s %s", user.Name, response.Msg, time.Now().Format("2006-01-02 15:04:05.0000"))
 			resultChan <- resultMap
 			(*(*userCoupon)).IsStop = true
 		} else if strings.Contains(response.Msg, "来晚了") || strings.Contains(response.Msg, "已抢光") || strings.Contains(response.Msg, "异常") {
 			logger.Error(response.Msg, zap.String("user", user.Name), zap.String("coupon", coupon.Desc), zap.Int("请求次数", tries), zap.Duration("耗时", resp.Time()))
-			resultMap[coupon.Desc] = fmt.Sprintf("%s：%s %s", user.Name, response.Msg, time.Now().Format("2006-01-02 15:04:05.0000"))
+			task.Fail++
+			resultMap[coupon.Desc] = fmt.Sprintf("❌%s：%s %s", user.Name, response.Msg, time.Now().Format("2006-01-02 15:04:05.0000"))
 			resultChan <- resultMap
 			(*(*userCoupon)).IsStop = true
 		} else {
 			logger.Warn(response.Msg, zap.String("user", user.Name), zap.String("coupon", coupon.Desc), zap.Int("请求次数", tries), zap.Duration("耗时", resp.Time()))
 			//最后一次尝试结果
 			if tries == config.MaxTries-1 {
-				resultMap[coupon.Desc] = fmt.Sprintf("%s：%s %s", user.Name, response.Msg, time.Now().Format("2006-01-02 15:04:05.0000"))
+				resultMap[coupon.Desc] = fmt.Sprintf("⚠️%s：%s %s", user.Name, response.Msg, time.Now().Format("2006-01-02 15:04:05.0000"))
+				task.Fail++
 			}
 		}
 	} else {
 		logger.Error("请求失败！", zap.Int("statusCode", int(resp.StatusCode())), zap.String("user", user.Name), zap.String("coupon", coupon.Desc))
-		resultMap[coupon.Desc] = fmt.Sprintf("%s：%s %s", user.Name, int(resp.StatusCode()), time.Now().Format("2006-01-02 15:04:05.0000"))
+		task.Fail++
+		resultMap[coupon.Desc] = fmt.Sprintf("❌%s：%s %s", user.Name, int(resp.StatusCode()), time.Now().Format("2006-01-02 15:04:05.0000"))
 		resultChan <- resultMap
 		(*(*userCoupon)).IsStop = true
 	}

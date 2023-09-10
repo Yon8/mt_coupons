@@ -49,9 +49,15 @@ type Config struct {
 type PushResponse struct {
 	Code int `json:"code"`
 }
+type Task struct {
+	Total   int
+	Success int
+	Fail    int
+}
 
 var logger *zap.Logger
 var config Config
+var task Task
 
 func main() {
 
@@ -65,21 +71,18 @@ func main() {
 	//筛选有效优惠券和用户
 	validCoupons := getValidCoupons()
 	validUsers := getValidUsers()
-
 	var wg sync.WaitGroup
 	resultChan := make(chan map[string]string)
 	//分券分Cookie下发任务
 	for _, validCoupon := range validCoupons {
 		for userKey, validUser := range validUsers {
-			wg.Add(1)
-
 			//用于判断是否停止某个抢卷线程
 			var userCoupon UserCoupon
 			userCoupon.ID = validCoupon.ID
 			userCoupon.Name = validUser.Name
 			userCoupon.IsStop = false
-
 			//并发任务
+			wg.Add(1)
 			go processCouponUserPair(validCoupon, userKey, validUser, &userCoupon, &wg, resultChan)
 		}
 	}
@@ -87,7 +90,9 @@ func main() {
 		wg.Wait()
 		close(resultChan)
 	}()
-	////推送
+	//for result := range resultChan {
+	//	fmt.Println(result)
+	//}
 	sendPush(resultChan)
 	//queryCounpon()
 }
@@ -216,14 +221,24 @@ func tomlInit() {
 func sendPush(resultChan chan map[string]string) {
 	var content []string
 	var title string
+
 	for results := range resultChan {
 		for couponName, result := range results {
 			title = couponName
 			content = append(content, result)
 		}
 	}
-	// 将切片内容合并为一个字符串，以换行分隔
-	combinedContent := strings.Join(content, "\n")
+	content = append(content, fmt.Sprintf("🎰成功率:%.2f%%	🏆成功:%d	💀失败:%d",
+		float64(task.Success)/float64(task.Total)*100.0,
+		task.Success, task.Fail))
+	//反转原始内容
+	var reversedContent []string
+
+	for i := len(content) - 1; i >= 0; i-- {
+		reversedContent = append(reversedContent, content[i])
+	}
+	//转换成字符串
+	combinedContent := strings.Join(reversedContent, "\n")
 
 	//pushUrl := fmt.Sprintf("http://www.pushplus.plus/send?token=%s&content=%s&title=%s&topic=%s",
 	//	url.QueryEscape(config.PushToken), url.QueryEscape(combinedContent), url.QueryEscape(title), url.QueryEscape("MT_COUPON"))
