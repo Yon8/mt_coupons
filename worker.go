@@ -108,19 +108,23 @@ func checkLogin(user User, coupon Coupon, resultChan chan map[string]string) boo
 			url.QueryEscape(config.ActualLng),
 			url.QueryEscape(config.ActualLat))
 	} else {
-		infoUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/limitcouponcomponent/info?couponReferIds=%s&actualLng=%s&actualLat=%s&geoType=2",
+		infoUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/limitcouponcomponent/info?couponReferIds=%s&actualLng=%s&actualLat=%s&geoType=2&gdPageId=%s&pageId=%s&yodaReady=h5&csecplatform=4&csecversion=2.1.2",
 			url.QueryEscape(coupon.ID),
 			url.QueryEscape(config.ActualLng),
-			url.QueryEscape(config.ActualLat))
+			url.QueryEscape(config.ActualLat),
+			url.QueryEscape(coupon.GdID),
+			url.QueryEscape(coupon.PageID))
 		//infoUrl = fmt.Sprintf("https://promotion.waimai.meituan.com/lottery/limitcouponcomponent/info?couponReferIds=%s&actualLng=%s&actualLat=%s&geoType=2&gdPageId=%s&pageId=%s&componentId=%s&yodaReady=h5&csecplatform=4&csecversion=2.1.2&mtgsig=%s",
 		//	coupon.ID, config.ActualLng, config.ActualLat, coupon.GdID, coupon.PageID, coupon.InstID, url.QueryEscape("{\"a1\":\"1.1\",\"a2\":1694070847161,\"a3\":\"8472xz73ww8652z1z7746zz0400yuz0y81z3v2w1w26979583w4498y1\",\"a5\":\"GWXOl81ochTUSfEq8Ju0bpN5fk3zdxRc\",\"a6\":\"hs1.4rMLnSSN7/TuDgTJbLhpKNDVnAdjPbCEuFr+W/5Q5JxbHifHeGI0uKyo40lOCzh8qiuMHlhW/EcSsVThBjZrkduyFwUbQ8bT0bSAmvWbYmsI=\",\"x0\":4,\"d1\":\"7dda9f6324f942a9f2a241755923ddc3\"}"))
 	}
 	client := resty.New()
 	resp, err := client.R().
+		SetHeader("Host", "promotion.waimai.meituan.com").
 		SetHeader("Connection", "keep-alive").
 		SetHeader("Accept", "application/json, text/plain, */*").
 		SetHeader("User-Agent", user.UA).
 		SetHeader("Origin", "https://market.waimai.meituan.com").
+		SetHeader("X-Requested-With", "com.tencent.mm").
 		SetHeader("Sec-Fetch-Site", "same-site").
 		SetHeader("Sec-Fetch-Mode", "cors").
 		SetHeader("Sec-Fetch-Dest", "empty").
@@ -144,8 +148,7 @@ func checkLogin(user User, coupon Coupon, resultChan chan map[string]string) boo
 	}
 
 	if resp.StatusCode() == 200 && strings.Contains(response.Msg, "成功") {
-		//v1v2是couponList结构不同 暂不进行判定
-		if response.Data.CouponInfo[coupon.ID] == nil && !strings.Contains(coupon.Desc, "v") {
+		if response.Data.CouponInfo[coupon.ID] == nil {
 			logger.Error("用户没有资格领取或该优惠券已下架！", zap.String("user", user.Name), zap.String("coupon", coupon.Desc))
 			logger.Warn("详细请求", zap.String("请求", string(resp.Body())))
 			task.Fail++
@@ -153,8 +156,26 @@ func checkLogin(user User, coupon Coupon, resultChan chan map[string]string) boo
 			resultChan <- resultMap
 			return false
 		}
-		logger.Info("用户登录状态检查成功！", zap.String("user", user.Name), zap.String("coupon", coupon.Desc))
+		//v1v2结构不同
+		if strings.Contains(coupon.Desc, "v") {
+			logger.Info("登录状态检查成功！",
+				zap.String("user", user.Name),
+				zap.String("coupon", coupon.Desc))
+			return true
+		}
+		couponData := response.Data.CouponInfo[coupon.ID].(map[string]interface{})
+		progressPercent := couponData["progressPercent"].(float64)
+		priceLimit := couponData["priceLimit"].(float64)
+		couponValue := couponData["couponValue"].(float64)
+		couponName := couponData["couponName"].(string)
+		couponReferId := couponData["couponReferId"].(string)[:4]
+		logger.Info("登录状态检查成功！",
+			zap.String("user", user.Name),
+			zap.String("ID", couponReferId),
+			zap.String("online", fmt.Sprintf("%s %.0f-%.0f", couponName, priceLimit, couponValue)),
+			zap.Float64("progress", progressPercent))
 		return true
+
 	} else {
 		logger.Error(response.Msg, zap.String("user", user.Name), zap.String("coupon", coupon.Desc))
 		task.Fail++
@@ -311,15 +332,17 @@ func makeRequest(user User, coupon Coupon, sign Sign, postUrl string, tries int,
 		} else if strings.Contains(response.Msg, "来晚了") || strings.Contains(response.Msg, "已抢光") || strings.Contains(response.Msg, "异常") {
 			logger.Error(response.Msg, zap.String("user", user.Name), zap.String("coupon", coupon.Desc), zap.Int("请求次数", tries), zap.Duration("耗时", resp.Time()))
 			task.Fail++
-			resultMap[coupon.Desc] = fmt.Sprintf("❌%s：%s %s", user.Name, response.Msg, time.Now().Format("2006-01-02 15:04:05.0000"))
-			resultChan <- resultMap
+			//resultMap[coupon.Desc] = fmt.Sprintf("❌%s：%s %s", user.Name, response.Msg, time.Now().Format("2006-01-02 15:04:05.0000"))
+			//resultChan <- resultMap
 			(*(*userCoupon)).IsStop = true
 		} else {
 			logger.Warn(response.Msg, zap.String("user", user.Name), zap.String("coupon", coupon.Desc), zap.Int("请求次数", tries), zap.Duration("耗时", resp.Time()))
 			//最后一次尝试结果
-			if tries == config.MaxTries-1 {
-				resultMap[coupon.Desc] = fmt.Sprintf("⚠️%s：%s %s", user.Name, response.Msg, time.Now().Format("2006-01-02 15:04:05.0000"))
+			if tries == config.MaxTries {
 				task.Fail++
+				resultMap[coupon.Desc] = fmt.Sprintf("⚠️%s：%s %s", user.Name, response.Msg, time.Now().Format("2006-01-02 15:04:05.0000"))
+				resultChan <- resultMap
+
 			}
 		}
 	} else {

@@ -3,14 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/go-resty/resty/v2"
 	"github.com/pelletier/go-toml"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"io/ioutil"
-	"net/url"
 	"os"
-	"strings"
 	"sync"
 	"time"
 )
@@ -46,9 +43,7 @@ type Config struct {
 	ActualLat            string `toml:"ActualLat"`
 	UserAgent            string `toml:"UserAgent"`
 }
-type PushResponse struct {
-	Code int `json:"code"`
-}
+
 type Task struct {
 	Total   int
 	Success int
@@ -58,6 +53,7 @@ type Task struct {
 var logger *zap.Logger
 var config Config
 var task Task
+var logFile *os.File
 
 func main() {
 
@@ -65,9 +61,14 @@ func main() {
 	loggerInit()
 	//初始化toml
 	tomlInit()
-
-	defer logger.Sync()
-
+	//时间差异
+	timeDiff()
+	defer func() {
+		// 关闭文件
+		logFile.Close()
+		// 同步 logger
+		logger.Sync()
+	}()
 	//筛选有效优惠券和用户
 	validCoupons := getValidCoupons()
 	validUsers := getValidUsers()
@@ -94,7 +95,7 @@ func main() {
 	//	fmt.Println(result)
 	//}
 	sendPush(resultChan)
-	//queryCounpon()
+	queryCounpon()
 }
 
 func getValidCoupons() []Coupon {
@@ -183,20 +184,42 @@ func getValidUsers() []User {
 	return validUsers
 }
 func loggerInit() {
+	logFile, _ = os.OpenFile("./data/log/mt.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+
+	// 创建 Zap 编码器配置
 	encoderConfig := zap.NewProductionEncoderConfig()
 	encoderConfig.TimeKey = "time"
 	encoderConfig.EncodeTime = func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
 		enc.AppendString(t.Format("2006-01-02 15:04:05.000000"))
 	}
 	encoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-	encoder := zapcore.NewConsoleEncoder(encoderConfig)
-	core := zapcore.NewCore(
-		encoder,
-		zapcore.Lock(os.Stdout),
-		zapcore.InfoLevel,
+
+	// 创建文件写入器
+	fileWriteSync := zapcore.AddSync(logFile)
+
+	// 创建文件核心（core）以输出到文件
+	fileCore := zapcore.NewCore(
+		zapcore.NewConsoleEncoder(zap.NewDevelopmentEncoderConfig()), // 或者使用其他适合您的编码器
+		fileWriteSync,
+		zapcore.InfoLevel, // 或其他日志级别
 	)
 
-	logger = zap.New(core)
+	// 创建控制台写入器
+	consoleWriteSync := zapcore.Lock(os.Stdout)
+
+	// 创建控制台核心（core）以输出到控制台
+	consoleCore := zapcore.NewCore(
+		zapcore.NewConsoleEncoder(encoderConfig), // 控制台编码器
+		consoleWriteSync,
+		zapcore.InfoLevel, // 或其他日志级别
+	)
+
+	// 创建多核心（multi-core），将日志同时输出到文件和控制台
+	cores := []zapcore.Core{fileCore, consoleCore}
+	multiCore := zapcore.NewTee(cores...)
+
+	// 创建 Zap Logger
+	logger = zap.New(multiCore)
 
 }
 func tomlInit() {
@@ -216,52 +239,5 @@ func tomlInit() {
 	if err != nil {
 		logger.Error("toml配置文件解析失败！", zap.Error(err))
 		return
-	}
-}
-func sendPush(resultChan chan map[string]string) {
-	var content []string
-	var title string
-
-	for results := range resultChan {
-		for couponName, result := range results {
-			title = couponName
-			content = append(content, result)
-		}
-	}
-	content = append(content, fmt.Sprintf("🎰成功率:%.2f%%	🏆成功:%d	💀失败:%d",
-		float64(task.Success)/float64(task.Total)*100.0,
-		task.Success, task.Fail))
-	//反转原始内容
-	var reversedContent []string
-
-	for i := len(content) - 1; i >= 0; i-- {
-		reversedContent = append(reversedContent, content[i])
-	}
-	//转换成字符串
-	combinedContent := strings.Join(reversedContent, "\n")
-
-	//pushUrl := fmt.Sprintf("http://www.pushplus.plus/send?token=%s&content=%s&title=%s&topic=%s",
-	//	url.QueryEscape(config.PushToken), url.QueryEscape(combinedContent), url.QueryEscape(title), url.QueryEscape("MT_COUPON"))
-	pushUrl := fmt.Sprintf("http://www.pushplus.plus/send?token=%s&content=%s&title=%s",
-		url.QueryEscape(config.PushToken), url.QueryEscape(combinedContent), url.QueryEscape(title))
-
-	client := resty.New()
-
-	resp, err := client.R().SetHeader("Content-Type", "application/json").Post(pushUrl)
-
-	if err != nil {
-		logger.Error("推送失败！", zap.Error(err))
-		return
-	}
-	var response PushResponse
-	err = json.Unmarshal(resp.Body(), &response)
-	if err != nil {
-		logger.Error("推送响应体Json解析失败", zap.Error(err))
-		return
-	}
-	if response.Code == 200 {
-		logger.Info("推送成功!", zap.String("响应", string(resp.Body())))
-	} else {
-		logger.Error("推送失败!", zap.String("响应", string(resp.Body())))
 	}
 }

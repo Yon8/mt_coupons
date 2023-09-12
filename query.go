@@ -8,7 +8,15 @@ import (
 	"log"
 	"net/url"
 	"strings"
+	"time"
 )
+
+type PushResponse struct {
+	Code int `json:"code"`
+}
+type TimeResponse struct {
+	Data int `json:"data"`
+}
 
 func queryCounpon() {
 	validUsers := getValidUsers()
@@ -106,4 +114,72 @@ func extractTokenFromCookie(cookie string) string {
 	}
 
 	return ""
+}
+func timeDiff() {
+	client := resty.New()
+	resp, err := client.R().
+		SetHeader("User-Agent", config.UserAgent).
+		Get("https://cube.meituan.com/ipromotion/cube/toc/component/base/getServerCurrentTime")
+	receiveTime := time.Now()
+	if err != nil {
+		logger.Error("TIME请求失败", zap.Error(err))
+		return
+	}
+
+	var respData TimeResponse
+	err = json.Unmarshal(resp.Body(), &respData)
+	if err != nil {
+		logger.Error("TIME响应体Json解析失败", zap.Error(err))
+		return
+	}
+
+	onlineTime := time.Unix(0, int64(respData.Data)*int64(time.Millisecond))
+	diffTime := onlineTime.Sub(receiveTime)
+	config.AheadFetchMilli += int(diffTime / time.Millisecond)
+	logger.Info(fmt.Sprintf("当前与服务器时间差值大约为%s 配置提前时间为%d", diffTime, config.AheadFetchMilli))
+}
+func sendPush(resultChan chan map[string]string) {
+	var content []string
+	var title string
+
+	for results := range resultChan {
+		for couponName, result := range results {
+			title = couponName
+			content = append(content, result)
+		}
+	}
+	content = append(content, fmt.Sprintf("🎰成功率:%.2f%%	🏆成功:%d	💀失败:%d",
+		float64(task.Success)/float64(task.Total)*100.0,
+		task.Success, task.Fail))
+	//反转原始内容
+	var reversedContent []string
+
+	for i := len(content) - 1; i >= 0; i-- {
+		reversedContent = append(reversedContent, content[i])
+	}
+	//转换成字符串
+	combinedContent := strings.Join(reversedContent, "\n")
+
+	pushUrl := fmt.Sprintf("http://www.pushplus.plus/send?token=%s&content=%s&title=%s&topic=%s", url.QueryEscape(config.PushToken), url.QueryEscape(combinedContent), url.QueryEscape(title), url.QueryEscape("MT_COUPON"))
+	//pushUrl := fmt.Sprintf("http://www.pushplus.plus/send?token=%s&content=%s&title=%s", url.QueryEscape(config.PushToken), url.QueryEscape(combinedContent), url.QueryEscape(title))
+
+	client := resty.New()
+
+	resp, err := client.R().SetHeader("Content-Type", "application/json").Post(pushUrl)
+
+	if err != nil {
+		logger.Error("推送失败！", zap.Error(err))
+		return
+	}
+	var response PushResponse
+	err = json.Unmarshal(resp.Body(), &response)
+	if err != nil {
+		logger.Error("推送响应体Json解析失败", zap.Error(err))
+		return
+	}
+	if response.Code == 200 {
+		logger.Info("推送成功!", zap.String("响应", string(resp.Body())))
+	} else {
+		logger.Error("推送失败!", zap.String("响应", string(resp.Body())))
+	}
 }
