@@ -44,7 +44,7 @@ func main() {
 			go worker.ProcessCouponUserPair(validCoupon, userKey, validUser, &userCoupon, &wg, resultChan, config, logger, &task)
 		}
 	}
-	results := []map[string]string{}
+	results := make(map[string][]string)
 	go func() {
 		wg.Wait()
 		close(resultChan)
@@ -52,8 +52,10 @@ func main() {
 	}()
 
 	for result := range resultChan {
-		results = append(results, result)
+		for key, value := range result {
+			results[key] = append(results[key], value)
+		}
 	}
 	utils.SendPush(logger, config, task, results)
-	//QueryCoupon()
+	utils.QueryCoupon(logger, config)
 }

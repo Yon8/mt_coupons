@@ -19,6 +19,7 @@ type Config struct {
 	ActualLng            string `toml:"ActualLng"`
 	ActualLat            string `toml:"ActualLat"`
 	UserAgent            string `toml:"UserAgent"`
+	EnableTopic          bool   `toml:"EnableTopic"`
 }
 type UserCoupon struct {
 	ID     string
@@ -45,11 +46,11 @@ func ProcessCouponUserPair(coupon Coupon, userKey int, user User, userCoupon *Us
 	if !login {
 		return
 	}
-	GrabCoupon(user, userKey, coupon, &userCoupon, resultChan, config, logger, &task)
+	FetchCoupon(user, userKey, coupon, &userCoupon, resultChan, config, logger, &task)
 
 }
 
-func GrabCoupon(user User, userKey int, coupon Coupon, userCoupon **UserCoupon, resultChan chan map[string]string, config Config, logger *zap.Logger, task **Task) {
+func FetchCoupon(user User, userKey int, coupon Coupon, userCoupon **UserCoupon, resultChan chan map[string]string, config Config, logger *zap.Logger, task **Task) {
 	var postUrl string
 	var version string
 	if strings.Contains(coupon.Desc, "v2") {
